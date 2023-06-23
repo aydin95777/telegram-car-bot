@@ -33,7 +33,6 @@ public class HasznaltautoParser {
             int currentPage = 1;
             boolean hasNextPage = true;
 
-
             while (hasNextPage) {
                 String url = URL + make + "/" + model + "/" + PAGE + currentPage;
                 Document doc = Jsoup.connect(url).get();
@@ -41,16 +40,11 @@ public class HasznaltautoParser {
                 carElements.stream()
                         .map(Element::getAllElements)
                         .flatMap(Collection::stream)
-                        .map(carElement -> carElement.getElementsByAttribute(HREF).attr(HREF))
+                        .map(element -> element.getElementsByAttribute(HREF).attr(HREF))
                         .filter(carLink -> carLink.contains(SID))
                         .map(carLink -> StringUtils.substringBefore(carLink, "#"))
-                        .forEach(carLink -> {
-                            Car car = new Car();
-                            car.setMake(make);
-                            car.setModel(model);
-                            car.setLink(carLink);
-                            cars.add(car);
-                        });
+                        .map(cutLink -> new Car(make, model, cutLink))
+                        .forEach(cars::add);
 
                 Element nextPage = doc.selectFirst(LI_NEXT);
                 Element nextPageDisabled = doc.selectFirst(LI_NEXT_DISABLED);

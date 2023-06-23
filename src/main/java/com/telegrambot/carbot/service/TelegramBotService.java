@@ -2,6 +2,7 @@ package com.telegrambot.carbot.service;
 
 import com.telegrambot.carbot.config.BotConfiguration;
 import com.telegrambot.carbot.exception.ApiException;
+import com.telegrambot.carbot.model.Car;
 import com.telegrambot.carbot.model.Subscription;
 import com.telegrambot.carbot.parser.HasznaltautoParser;
 import com.telegrambot.carbot.repository.CarRepository;
@@ -21,6 +22,7 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import java.io.InputStream;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Component
@@ -29,9 +31,8 @@ public class TelegramBotService extends TelegramLongPollingBot {
 
     final BotConfiguration botConfiguration;
     final HasznaltautoParser parser;
-    final CarService carService;
-    final CarRepository carRepository;
     final SubscriptionRepository subscriptionRepository;
+    final CarRepository carRepository;
 
     @Override
     public String getBotUsername() {
@@ -50,39 +51,48 @@ public class TelegramBotService extends TelegramLongPollingBot {
                 String text = update.getMessage().getText();
                 long chatId = update.getMessage().getChatId();
 
-                switch (text) {
-                    case "/start" -> {
-                        sendMessage(chatId, "Hi, " + update.getMessage().getFrom().getFirstName());
-                        sendMessage(chatId, "For subscrubing use /subsribe make model (e.g. /subscribe hyundai ix_35)");
-                        sendMessage(chatId, "For unsubscrubing use /unsubsribe make model (e.g. /unsubscribe hyundai ix_35)");
-                    }
-                    case "/info" -> sendMessage(chatId, "I check hasznaltauto.hu");
-                    case "/difference" -> processDifference(chatId);
-                    case "/status" -> processStatus(chatId);
-                    case "/clear" -> carRepository.deleteAll();
-                }
-
                 if (text.contains("/subscribe")) {
-                    processSubscription(chatId, text);
+                    subscribe(chatId, text);
+                    return;
                 }
 
                 if (text.contains("/unsubscribe")) {
-                    processUnsubscription(chatId, text);
+                    unsubscribe(chatId, text);
+                    return;
+                }
+
+                switch (text) {
+                    case "/start" -> {
+                        sendMessage(chatId, "Hi, " + update.getMessage().getFrom().getFirstName());
+                        sendMessage(chatId, "Use /subsribe make model (e.g. /subscribe hyundai ix_35) to start receiving new advertisements");
+                        sendMessage(chatId, "Use /unsubsribe make model (e.g. /unsubscribe hyundai ix_35) to stop receiving new advertisements");
+                        sendMessage(chatId, "Use /status to get your subscription status");
+                        sendMessage(chatId, "Use /difference to get new cars now");
+                        return;
+                    }
+                    case "/info" -> {
+                        sendMessage(chatId, "I check hasznaltauto.hu");
+                        return;
+                    }
+                    case "/difference" -> {
+                        sendMessage(chatId, "Process is started");
+                        Set<Subscription> subscriptions = subscriptionRepository.findAllByChatId(chatId);
+                        processDifference(subscriptions);
+                        return;
+                    }
+                    case "/status" -> {
+                        getStatus(chatId);
+                        return;
+                    }
+                    default -> {
+                        sendMessage(chatId, "Unknown command");
+                        return;
+                    }
                 }
             }
         } catch (Exception e) {
-            log.error("Error during processing query: {}", e.getMessage());
-            throw new ApiException("Error during processing query: {}", e);
-        }
-    }
-
-    private void processStatus(long chatId) {
-        Set<Subscription> subscriptions = subscriptionRepository.findAllByChatId(chatId);
-        if (!CollectionUtils.isEmpty(subscriptions)) {
-            subscriptions.forEach(subscription -> sendMessage(chatId,
-                    "Your subscription: " + subscription.getMake() + " " + subscription.getModel()));
-        } else {
-            sendMessage(chatId, "You do not have a subscription");
+            log.error("Error during executing command: {}", e.getMessage());
+            throw new ApiException("Error during executing command: {}", e);
         }
     }
 
@@ -110,42 +120,58 @@ public class TelegramBotService extends TelegramLongPollingBot {
         }
     }
 
-    private void processDifference(long chatId) {
-        sendMessage(chatId, "Process is started");
-        Set<String> difference = carService.getNewCars(chatId);
+    public void processDifference(Set<Subscription> subscriptions) {
+        for (Subscription subscription : subscriptions) {
+            calculateDifference(subscription.getChatId(), subscription.getMake(), subscription.getModel());
+        }
+    }
+
+    private void calculateDifference(long chatId, String make, String model) {
+        var previousCars = carRepository.findAllByMakeAndModel(make, model);
+        var actualCars = parser.parse(make, model);
+        actualCars.removeAll(previousCars);
+        var difference = actualCars.stream()
+                .map(Car::getLink)
+                .collect(Collectors.toSet());
+
         if (!CollectionUtils.isEmpty(difference)) {
+            carRepository.saveAll(actualCars);
             if (difference.size() > 10) {
-                sendDocument(chatId, Utils.convertSetToInputStream(difference), "difference.txt");
+                sendDocument(chatId, Utils.convertSetToInputStream(difference), make + " " + model + ".txt");
             } else {
+                sendMessage(chatId, "For " + make + " " + model + ": ");
                 difference.forEach(link -> sendMessage(chatId, link));
             }
         } else {
-            sendMessage(chatId, "There are no new cars");
+            sendMessage(chatId, "No new cars for " + make + " " + model);
         }
     }
 
-    private void processSubscription(long chatId, String text) {
-        String[] input = text.split(" ");
-        String make = Objects.requireNonNull(input)[1];
-        String model = input[2];
-        Subscription subscription = new Subscription();
-        subscription.setChatId(chatId);
-        subscription.setMake(make);
-        subscription.setModel(model);
+    private void subscribe(long chatId, String text) {
+        String[] carInfo = text.split(" ");
+        Subscription subscription = new Subscription(chatId, Objects.requireNonNull(carInfo)[1], carInfo[2]);
         Set<Subscription> subscriptions = subscriptionRepository.findAllByChatId(chatId);
         if (subscriptions.contains(subscription)) {
-            sendMessage(chatId, "You have already subscribed for this car");
+            sendMessage(chatId, "You subscribed to current car before");
             return;
         }
         subscriptionRepository.save(subscription);
-        sendMessage(chatId, "You have been successfully subscribed");
+        sendMessage(chatId, "You have successfully subscribed");
     }
 
-    private void processUnsubscription(long chatId, String text) {
-        String[] input = text.split(" ");
-        String make = Objects.requireNonNull(input)[1];
-        String model = input[2];
-        subscriptionRepository.deleteByChatIdAndMakeAndModel(chatId, make, model);
-        sendMessage(chatId, "You have been successfully unsubscribed");
+    private void unsubscribe(long chatId, String text) {
+        String[] carInfo = text.split(" ");
+        subscriptionRepository.deleteByChatIdAndMakeAndModel(chatId, Objects.requireNonNull(carInfo)[1], carInfo[2]);
+        sendMessage(chatId, "You have successfully unsubscribed");
+    }
+
+    private void getStatus(long chatId) {
+        Set<Subscription> subscriptions = subscriptionRepository.findAllByChatId(chatId);
+        if (!CollectionUtils.isEmpty(subscriptions)) {
+            subscriptions.forEach(subscription -> sendMessage(chatId,
+                    "Your subscription: " + subscription.getMake() + " " + subscription.getModel()));
+        } else {
+            sendMessage(chatId, "You do not have a subscription");
+        }
     }
 }

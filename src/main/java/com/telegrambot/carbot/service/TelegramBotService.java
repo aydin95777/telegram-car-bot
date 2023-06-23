@@ -149,7 +149,9 @@ public class TelegramBotService extends TelegramLongPollingBot {
 
     private void subscribe(long chatId, String text) {
         String[] carInfo = text.split(" ");
-        Subscription subscription = new Subscription(chatId, Objects.requireNonNull(carInfo)[1], carInfo[2]);
+        String make = Objects.requireNonNull(carInfo)[1];
+        String model = carInfo[2];
+        Subscription subscription = new Subscription(chatId, make, model);
         Set<Subscription> subscriptions = subscriptionRepository.findAllByChatId(chatId);
         if (subscriptions.contains(subscription)) {
             sendMessage(chatId, "You subscribed to current car before");
@@ -157,6 +159,16 @@ public class TelegramBotService extends TelegramLongPollingBot {
         }
         subscriptionRepository.save(subscription);
         sendMessage(chatId, "You have successfully subscribed");
+        Set<Car> previousCars = carRepository.findAllByMakeAndModel(make, model);
+        if (CollectionUtils.isEmpty(previousCars)) {
+            calculateDifference(chatId, make, model);
+        } else {
+            var difference = previousCars.stream()
+                    .map(Car::getLink)
+                    .collect(Collectors.toSet());
+            sendMessage(chatId, "Sending available cars");
+            sendDocument(chatId, Utils.convertSetToInputStream(difference), make + " " + model + ".txt");
+        }
     }
 
     private void unsubscribe(long chatId, String text) {

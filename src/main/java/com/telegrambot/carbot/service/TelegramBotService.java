@@ -20,6 +20,7 @@ import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 
 import java.io.InputStream;
+import java.util.HashMap;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -121,13 +122,17 @@ public class TelegramBotService extends TelegramLongPollingBot {
     }
 
     public void processDifference(Set<Subscription> subscriptions) {
+        HashMap<Subscription, Set<Car>> previousCarsForEachChat = new HashMap<>();
         for (Subscription subscription : subscriptions) {
-            calculateDifference(subscription.getChatId(), subscription.getMake(), subscription.getModel());
+            Set<Car> previousCars = carRepository.findAllByMakeAndModel(subscription.getMake(), subscription.getModel());
+            previousCarsForEachChat.put(subscription, previousCars);
         }
+        subscriptions.forEach(subscription ->
+                calculateDifference(subscription.getChatId(), subscription.getMake(), subscription.getModel(),
+                        previousCarsForEachChat.get(subscription)));
     }
 
-    private void calculateDifference(long chatId, String make, String model) {
-        var previousCars = carRepository.findAllByMakeAndModel(make, model);
+    private void calculateDifference(long chatId, String make, String model, Set<Car> previousCars) {
         var actualCars = parser.parse(make, model);
         actualCars.removeAll(previousCars);
         var difference = actualCars.stream()
@@ -161,7 +166,7 @@ public class TelegramBotService extends TelegramLongPollingBot {
         sendMessage(chatId, "You have successfully subscribed");
         Set<Car> previousCars = carRepository.findAllByMakeAndModel(make, model);
         if (CollectionUtils.isEmpty(previousCars)) {
-            calculateDifference(chatId, make, model);
+            calculateDifference(chatId, make, model, previousCars);
         } else {
             var difference = previousCars.stream()
                     .map(Car::getLink)
